@@ -30,6 +30,9 @@ public struct BurnPlan: Sendable {
     public let warnings: [String]
     public let steps: [BurnStep]
     public let experimental: Bool
+    /// When set, the unprivileged app streams this file into a FIFO so the
+    /// root script never reads protected folders (e.g. ~/Downloads) itself.
+    public var feedImage: URL? = nil
 
     public var script: String {
         steps
@@ -46,6 +49,11 @@ public struct BurnPlanner: Sendable {
     public init(tools: ToolPaths = .resolve(thirdPartyDir: nil)) {
         self.tools = tools
     }
+
+    public static let feedToken = "@@IMAGE_FIFO@@"
+    public static let hashToken = "@@IMAGE_SHA@@"
+    private var feedToken: String { Self.feedToken }
+    private var hashToken: String { Self.hashToken }
 
     /// Single-quote a string for safe shell embedding.
     private func q(_ string: String) -> String {
@@ -78,23 +86,25 @@ public struct BurnPlanner: Sendable {
         steps.append(BurnStep("Unmount \(drive.id)",
             "\(tools.diskutil) unmountDisk force \(drive.deviceNode)"))
         steps.append(BurnStep("Write image with dd (raw)",
-            "\(tools.dd) if=\(q(image.url.path)) of=\(q(drive.rawDeviceNode)) bs=4m"))
+            "\(tools.dd) if=\(feedToken) of=\(q(drive.rawDeviceNode)) bs=4m"))
         steps.append(BurnStep("Flush buffers", "sync"))
         if config.verifyAfterWrite {
             steps.append(BurnStep("Verify (compare SHA-256 of written bytes)",
-                "SRC=$(\(tools.shasum) -a 256 \(q(image.url.path)) | cut -d' ' -f1); " +
-                "DST=$(\(tools.dd) if=\(q(drive.rawDeviceNode)) bs=4m count=$(( ( \(image.sizeBytes) + 4194303 ) / 4194304 )) 2>/dev/null | head -c \(image.sizeBytes) | \(tools.shasum) -a 256 | cut -d' ' -f1); " +
+                "SRC=$(cat \(hashToken)); " +
+                "DST=$(\(tools.dd) if=\(q(drive.rawDeviceNode)) bs=4m count=$(( ( \(image.sizeBytes) + 4194303 ) / 4194304 )) 2>/dev/null | head -c \(image.sizeBytes) | \(tools.shasum) -a 256 | cut -d' ' -f1) || true; " +
                 "[ \"$SRC\" = \"$DST\" ] && echo 'Verify OK' || (echo 'Verify FAILED' && exit 1)"))
         }
         steps.append(BurnStep("Eject \(drive.id)", "\(tools.diskutil) eject \(drive.deviceNode) || true"))
 
-        return BurnPlan(
+        var plan = BurnPlan(
             mode: .dd,
             summary: "Write \(image.name) (\(image.displaySize)) byte-for-byte to \(drive.title) (\(drive.displaySize)).",
             warnings: ["ALL DATA on \(drive.title) (\(drive.id)) will be ERASED."],
             steps: steps,
             experimental: false
         )
+        plan.feedImage = image.url
+        return plan
     }
 
     // MARK: - Windows (FAT32 + WIM split + Win11 bypass)
