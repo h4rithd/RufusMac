@@ -16,6 +16,7 @@ final class AppModel {
     var isRefreshing = false
     var isInspecting = false
     var isRunning = false
+    var progress: Double? = nil
 
     var showConfirm = false
     var acknowledgedErase = false
@@ -95,14 +96,17 @@ final class AppModel {
         guard let plan = pendingPlan else { return }
         showConfirm = false
         isRunning = true
-        defer { isRunning = false }
+        progress = nil
+        defer { isRunning = false; progress = nil }
 
         log = ["# \(plan.summary)"]
         await runner.setDryRun(dryRun)
         do {
             let output = try await runner.run(
                 script: plan.script,
-                prompt: "RufusMac needs administrator access to \(plan.mode.rawValue.lowercased()) on \(plan.summary)"
+                prompt: "RufusMac needs administrator access to \(plan.mode.rawValue.lowercased()) on \(plan.summary)",
+                feedImage: plan.feedImage,
+                onProgress: { [weak self] value in Task { @MainActor in self?.progress = value } }
             )
             log.append(output)
             resultIsError = false
